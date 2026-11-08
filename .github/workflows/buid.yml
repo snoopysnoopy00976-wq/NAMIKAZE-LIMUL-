@@ -1,0 +1,41 @@
+name: build
+on: [push, workflow_dispatch]
+
+permissions:
+  contents: write      # indispensable pour créer une Release
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: SDK Android 35
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" >/dev/null
+
+      - name: Générer le projet NAMIKAZE
+        run: |
+          # (colle ici le bloc "Générer le projet" du YAML précédent, inchangé)
+          # ... le cat > gen.sh <<'SCRIPT' ... SCRIPT + bash gen.sh
+
+      - name: Compiler l'APK
+        run: cd NAMIKAZE && gradle assembleDebug --no-daemon
+
+      - name: Publier l'APK dans les Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0
+          name: NAMIKAZE v1.0
+          files: NAMIKAZE/app/build/outputs/apk/debug/app-debug.apk
+          body: "APK NAMIKAZE — clé 2000 / 2001 / 200100"
